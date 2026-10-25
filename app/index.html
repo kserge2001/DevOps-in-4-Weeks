@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QuickShop</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 560px; margin: 40px auto; padding: 0 16px; color: #1f2937; }
+  li { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #e5e7eb; }
+  button { padding: 6px 14px; border: 0; border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer; }
+  #status { margin-top: 20px; color: #047857; }
+  small { color: #6b7280; }
+</style>
+</head>
+<body>
+<h1>QuickShop</h1>
+<small id="platform">checking...</small>
+<ul id="products"></ul>
+<p id="status"></p>
+<script>
+  fetch("/health").then(r => r.json()).then(h => {
+    document.getElementById("platform").textContent = "Served by: " + (h.platform || "unknown");
+  });
+  fetch("/api/products").then(r => r.json()).then(items => {
+    const ul = document.getElementById("products");
+    for (const p of items) {
+      const li = document.createElement("li");
+      li.innerHTML = `<span>${p.name} - $${p.price.toFixed(2)}</span>`;
+      const b = document.createElement("button");
+      b.textContent = "Buy";
+      b.onclick = () => fetch("/api/orders", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({product_id: p.id, quantity: 1})
+      }).then(r => r.json()).then(o => {
+        document.getElementById("status").textContent = `Order #${o.id} confirmed: ${o.product} ($${o.total.toFixed(2)})`;
+      });
+      li.appendChild(b);
+      ul.appendChild(li);
+    }
+  });
+</script>
+</body>
+</html>

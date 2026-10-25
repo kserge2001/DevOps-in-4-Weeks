@@ -1,0 +1,24 @@
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: quickshop
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: localonly
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "shop", "-d", "quickshop"]
+      interval: 2s
+      retries: 15
+  app:
+    build: .
+    ports:
+      - "8000:8080"
+    environment:
+      DB_HOST: db
+      DB_NAME: quickshop
+      DB_USER: shop
+      DB_PASSWORD: localonly
+      PLATFORM: local-docker
+    depends_on:
+      db:
+        condition: service_healthy

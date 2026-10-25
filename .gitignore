@@ -1,0 +1,8 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.log
+*.txt
+!app/requirements.txt
+watch_breaks.sh
+__pycache__/

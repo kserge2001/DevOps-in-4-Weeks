@@ -1,0 +1,94 @@
+name: quickshop
+
+# One pipeline, four targets: test once, build one image, deploy it where you choose.
+on:
+  push:
+    branches: [main]
+    paths: ["app/**"]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Where to deploy
+        type: choice
+        options: [ecs, ec2, lambda, eks]
+        default: ecs
+
+permissions:
+  contents: read
+  id-token: write # lets the job ask GitHub for an OIDC token, which AWS trades for credentials
+
+env:
+  AWS_REGION: us-east-1
+  TARGET: ${{ inputs.target || 'ecs' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run the app with a real PostgreSQL and smoke-test it
+        working-directory: app
+        run: |
+          docker compose up -d --build --wait
+          curl -fsS localhost:8000/health
+          curl -fsS -X POST localhost:8000/api/orders -H 'Content-Type: application/json' -d '{"product_id": 1, "quantity": 1}'
+          docker compose down
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - id: tag
+        run: echo "tag=git-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - name: Build and push one image for all four targets
+        working-directory: app
+        run: |
+          IMAGE=${{ steps.ecr.outputs.registry }}/quickshop:${{ steps.tag.outputs.tag }}
+          docker build --platform linux/amd64 --provenance=false -t "$IMAGE" .
+          docker push "$IMAGE"
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target || 'ecs' }} # add required reviewers on an environment to gate it
+    env:
+      TAG: ${{ needs.build.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v4
+        if: env.TARGET != 'eks'
+        with:
+          terraform_wrapper: false
+      - name: Deploy with Terraform (ec2, ecs, lambda)
+        if: env.TARGET != 'eks'
+        working-directory: terraform/${{ env.TARGET }}
+        run: |
+          terraform init -input=false
+          terraform apply -auto-approve -input=false -var image_tag="$TAG"
+          echo "URL=$(terraform output -raw url)" >> "$GITHUB_ENV"
+
+      - name: Deploy to EKS (new image on the Deployment)
+        if: env.TARGET == 'eks'
+        run: |
+          aws eks update-kubeconfig --name quickshop
+          REPO=$(aws ecr describe-repositories --repository-names quickshop --query "repositories[0].repositoryUri" --output text)
+          kubectl -n quickshop set image deployment/quickshop app="$REPO:$TAG"
+          kubectl -n quickshop rollout status deployment/quickshop --timeout=5m
+          echo "URL=http://$(kubectl -n quickshop get ingress quickshop -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')" >> "$GITHUB_ENV"
+
+      - name: Smoke test the live target
+        run: curl -fsS --retry 10 --retry-all-errors --retry-delay 15 --max-time 30 "$URL/health"
